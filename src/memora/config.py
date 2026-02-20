@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     def meta_path(self) -> Path:
         return self.data_dir / "meta.json"
 
+    @property
+    def bm25_path(self) -> Path:
+        return self.data_dir / "bm25.pkl"
+
     def ensure_dirs(self):
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
