@@ -1,6 +1,7 @@
 import warnings
 import logging
 import os
+import time
 
 # Suppress model loading warnings globally before any lazy imports trigger them
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -26,6 +27,7 @@ def add(
     path: Path = typer.Argument(..., help="File or directory to add"),
     recursive: bool = typer.Option(False, "-r", "--recursive", help="Recurse into directories"),
 ):
+    t0 = time.time()
     """Add files to memory."""
     from memora.ingest import collect_files, read_file, chunk_text
     from memora.store import Store
@@ -49,6 +51,8 @@ def add(
             console.print(f"  [red]✗[/] {f.name} → {e}")
 
     console.print(f"\n[bold green]Added {total} chunks from {len(files)} file(s)[/]")
+    print(f"Store init: {time.time()-t0:.2f}s")
+
 
 
 @app.command()

@@ -28,8 +28,16 @@ class Settings(BaseSettings):
     def meta_path(self) -> Path:
         return self.data_dir / "meta.json"
 
+    @property
+    def bm25_path(self) -> Path:
+        return self.data_dir / "bm25.pkl"
+
     def ensure_dirs(self):
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
+
+SUPPORTED = {".txt", ".md", ".pdf", ".docx", ".jpg", ".jpeg", ".png",".py", ".js", ".html", ".css", ".json", ".csv","xml", ".yaml", ".yml",".go", ".rs", ".cpp", ".c", ".h", ".hpp", ".sh", ".bat", ".ps1", ".sql", ".mdx", ".ipynb", ".r", ".swift", ".kt", ".dart", ".lua", ".scala", ".hs", ".erl", ".ex", ".exs", ".clj", ".cljs", ".groovy", ".vb", ".fsharp", ".elm", ".nim", ".zig", ".asm", ".s", ".v", ".sv", ".vhd", ".vhdl", ".verilog", ".systemverilog", ".m", ".mat", ".rmd", ".rmarkdown", ".tex", ".bib", ".sty", ".cls", ".dtx", ".ins", ".ltx",".log",".aux",".out",".toc",".lof",".lot",".fls",".fdb_latexmk",".synctex.gz",".synctex","Makefile","Dockerfile","Vagrantfile","CMakeLists.txt","build.gradle","pom.xml","package.json","yarn.lock","Gemfile","requirements.txt","Pipfile","Pipfile.lock","environment.yml","conda.yaml","conda.yml",".env",".env.local",".env.development",".env.production",".env.test"}
+
+TEXT_EXTENSIONS = {".txt", ".md", ".pdf", ".docx", ".py", ".js", ".html", ".css", ".json", ".csv","xml", ".yaml", ".yml",".go", ".rs", ".cpp", ".c", ".h", ".hpp", ".sh", ".bat", ".ps1", ".sql", ".mdx", ".ipynb", ".r", ".swift", ".kt", ".dart", ".lua", ".scala", ".hs", ".erl", ".ex", ".exs", ".clj", ".cljs", ".groovy", ".vb", ".fsharp", ".elm", ".nim", ".zig", ".asm", ".s", ".vhdl",".tex",".bib",".sty",".cls",".dtx",".ins",".ltx",".log",".aux",".out",".toc",".lof",".lot",".fls",".fdb_latexmk",".synctex.gz",".synctex","Makefile","Dockerfile","Vagrantfile","CMakeLists.txt","build.gradle","pom.xml","package.json","yarn.lock","Gemfile","requirements.txt","Pipfile","Pipfile.lock","environment.yml","conda.yaml","conda.yml",".env",".env.local",".env.development",".env.production",".env.test"}
 
 settings = Settings()
