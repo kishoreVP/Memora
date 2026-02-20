@@ -6,14 +6,13 @@ import warnings
 import numpy as np
 import faiss
 import hashlib
-import pickle
 from pathlib import Path
-from sentence_transformers import SentenceTransformer
 from memora.config import settings
 
 _model = None
 
 def _get_model():
+    """Lazy load model only when actually needed."""
     global _model
     if _model is None:
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -35,6 +34,16 @@ def embed(texts: list[str]) -> np.ndarray:
 
 
 def _dim() -> int:
+    """Get dimension without loading model."""
+    # Hard-code for common models to avoid loading
+    dim_map = {
+        "all-MiniLM-L6-v2": 384,
+        "all-mpnet-base-v2": 768,
+        "all-MiniLM-L12-v2": 384,
+    }
+    if settings.embedding_model in dim_map:
+        return dim_map[settings.embedding_model]
+    # Fallback: load model only if unknown
     return _get_model().get_sentence_embedding_dimension()
 
 
@@ -50,11 +59,12 @@ class Store:
         self.chunks_dir = settings.data_dir / "chunks"
         self.chunks_dir.mkdir(exist_ok=True)
         self.meta: list[dict] = []
-        self.file_hashes: dict[str, str] = {}  # source -> hash
+        self.file_hashes: dict[str, str] = {}
         self.index: faiss.Index | None = None
         self._load()
 
     def _load(self):
+        """Load index WITHOUT triggering model load."""
         if settings.meta_path.exists():
             data = json.loads(settings.meta_path.read_text())
             self.meta = data.get("chunks", [])
@@ -63,11 +73,10 @@ class Store:
         if settings.index_path.exists():
             self.index = faiss.read_index(str(settings.index_path))
         else:
-            # Use IVF index for better compression (train after 1000+ vectors)
+            # Create index with known dimension - NO MODEL LOADING
             self.index = faiss.IndexFlatIP(_dim())
 
     def _save(self):
-        # Save only metadata, not full text
         data = {
             "chunks": self.meta,
             "hashes": self.file_hashes
@@ -76,28 +85,26 @@ class Store:
         faiss.write_index(self.index, str(settings.index_path))
 
     def _get_chunk_path(self, chunk_id: int) -> Path:
-        """Get path to chunk text file."""
         return self.chunks_dir / f"{chunk_id}.txt"
 
     def _write_chunk(self, chunk_id: int, text: str):
-        """Write chunk text to disk."""
         self._get_chunk_path(chunk_id).write_text(text, encoding="utf-8")
 
     def _read_chunk(self, chunk_id: int) -> str:
-        """Read chunk text from disk."""
         path = self._get_chunk_path(chunk_id)
         return path.read_text(encoding="utf-8") if path.exists() else ""
 
     def add(self, chunks: list[str], source: str) -> int:
-        # Check if file already indexed
+        # Check deduplication
         try:
             file_hash = _file_hash(source)
             if source in self.file_hashes and self.file_hashes[source] == file_hash:
-                return 0  # Already indexed, skip
+                return 0
             self.file_hashes[source] = file_hash
         except:
-            pass  # If hashing fails, proceed anyway
+            pass
 
+        # Model loads HERE - only when embedding
         vecs = embed(chunks)
         start = self.index.ntotal
         self.index.add(vecs)
@@ -105,9 +112,7 @@ class Store:
         
         for i, chunk in enumerate(chunks):
             chunk_id = start + i
-            # Write chunk text to disk
             self._write_chunk(chunk_id, chunk)
-            # Store only metadata
             self.meta.append({
                 "id": chunk_id, 
                 "source": source, 
@@ -115,42 +120,17 @@ class Store:
             })
         
         self._save()
-        
-        # Convert to IVF if we have enough vectors
-        if self.index.ntotal >= 1000 and isinstance(self.index, faiss.IndexFlatIP):
-            self._convert_to_ivf()
-        
         return len(chunks)
-
-    def _convert_to_ivf(self):
-        """Convert flat index to IVF for better performance."""
-        print("Converting to IVF index for better performance...")
-        nlist = min(100, self.index.ntotal // 10)  # Number of clusters
-        quantizer = faiss.IndexFlatIP(_dim())
-        new_index = faiss.IndexIVFFlat(quantizer, _dim(), nlist)
-        
-        # Train on existing vectors
-        vectors = []
-        for m in self.meta:
-            text = self._read_chunk(m["id"])
-            vectors.append(text)
-        
-        vecs = embed(vectors)
-        new_index.train(vecs)
-        new_index.add(vecs)
-        
-        self.index = new_index
-        self._save()
 
     def search(self, query: str, k: int | None = None) -> list[dict]:
         k = min(k or settings.top_k, self.index.ntotal) if self.index.ntotal else 0
         if k == 0:
             return []
         
-        # Set nprobe for IVF indexes
         if hasattr(self.index, 'nprobe'):
             self.index.nprobe = 10
         
+        # Model loads HERE - only when searching
         vec = embed([query])
         scores, ids = self.index.search(vec, k)
         
@@ -179,16 +159,17 @@ class Store:
                 if chunk_path.exists():
                     chunk_path.unlink()
         
-        # Remove from hashes
         self.file_hashes.pop(source, None)
         
         self.meta = keep
         self.index = faiss.IndexFlatIP(_dim())
+        
         if keep:
             vectors = []
             for m in keep:
                 text = self._read_chunk(m["id"])
                 vectors.append(text)
+            # Model loads HERE
             vecs = embed(vectors)
             self.index.add(vecs)
             for i, m in enumerate(keep):

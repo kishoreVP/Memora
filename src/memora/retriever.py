@@ -13,7 +13,7 @@ class HybridRetriever:
         self._load_bm25()
 
     def _load_bm25(self):
-        """Load cached BM25 or rebuild if needed."""
+        """Load cached BM25 or rebuild."""
         if self.bm25_path.exists() and self.store.meta:
             try:
                 with open(self.bm25_path, 'rb') as f:
@@ -24,7 +24,7 @@ class HybridRetriever:
         self._rebuild_bm25()
 
     def _rebuild_bm25(self):
-        """Rebuild and cache BM25 index."""
+        """Rebuild and cache BM25."""
         if not self.store.meta:
             self.bm25 = None
             return
@@ -44,15 +44,15 @@ class HybridRetriever:
         if not self.store.meta:
             return []
 
-        # FAISS semantic search
+        # Semantic search
         sem = self.store.search(query, k=k * 2)
 
-        # BM25 keyword search
+        # BM25 search
         if self.bm25 is None:
             self._rebuild_bm25()
         
         if self.bm25 is None:
-            return sem[:k]  # Fallback to just semantic
+            return sem[:k]
         
         bm_scores = self.bm25.get_scores(query.lower().split())
         top_bm = np.argsort(bm_scores)[::-1][: k * 2]
@@ -62,7 +62,7 @@ class HybridRetriever:
             if i < len(self.store.meta) and bm_scores[i] > 0
         ]
 
-        # Reciprocal Rank Fusion
+        # RRF fusion
         scored: dict[int, float] = {}
         for rank, doc in enumerate(sem):
             scored[doc["id"]] = scored.get(doc["id"], 0) + 1 / (rank + 60)
@@ -71,7 +71,6 @@ class HybridRetriever:
 
         top_ids = sorted(scored, key=scored.get, reverse=True)[:k]
         
-        # Fetch full text for results
         results = []
         for chunk_id in top_ids:
             for m in self.store.meta:
