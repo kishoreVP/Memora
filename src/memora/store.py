@@ -108,3 +108,4 @@ class Store:
             "total_sources": len(sources),
             "index_size": self.index.ntotal,
         }
+    
