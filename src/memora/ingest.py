@@ -42,6 +42,15 @@ def read_file(path: Path) -> str:
     if ext == ".docx":
         from docx import Document
         return "\n".join(p.text for p in Document(str(path)).paragraphs)
+    if ext==".pptx":
+        from pptx import Presentation
+        prs = Presentation(str(path))
+        text_runs = []
+        for slide in prs.slides:
+            for shape in slide.shapes:
+                if hasattr(shape, "text"):
+                    text_runs.append(shape.text)
+        return "\n".join(text_runs)
     if ext in {".jpg", ".jpeg", ".png"}:
         return caption_image(path)
     

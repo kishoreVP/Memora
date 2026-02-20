@@ -50,9 +50,9 @@ SUPPORTED = {
     "build.gradle", "pom.xml", "package.json", "yarn.lock", "Gemfile", 
     "requirements.txt", "Pipfile", "Pipfile.lock", "environment.yml", 
     "conda.yaml", "conda.yml", ".env", ".env.local", ".env.development", 
-    ".env.production", ".env.test"
+    ".env.production", ".env.test",".pptx"
 }
 
-TEXT_EXTENSIONS = SUPPORTED - {".jpg", ".jpeg", ".png", ".pdf", ".docx"}
+TEXT_EXTENSIONS = SUPPORTED - {".jpg", ".jpeg", ".png", ".pdf", ".docx",".pptx"}
 
 settings = Settings()

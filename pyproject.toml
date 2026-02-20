@@ -21,6 +21,7 @@ dependencies = [
     "pydantic-settings",
     "python-dotenv",
     "numpy",
+    "python-pptx>=1.0.2",
 ]
 
 [project.scripts]
