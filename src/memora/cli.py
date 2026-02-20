@@ -1,120 +1,88 @@
-import warnings
-import logging
-import os
-import time
-
-# Suppress model loading warnings globally before any lazy imports trigger them
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
-warnings.filterwarnings("ignore", category=FutureWarning)
-warnings.filterwarnings("ignore", category=UserWarning)
-logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
-logging.getLogger("transformers").setLevel(logging.ERROR)
-logging.getLogger("transformers.modeling_utils").setLevel(logging.ERROR)
-logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
-logging.getLogger("torch").setLevel(logging.ERROR)
-logging.getLogger("httpx").setLevel(logging.ERROR)
-
-from pathlib import Path
 import typer
+from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
-app = typer.Typer(name="memora", help="Terminal Memory Assistant")
+app = typer.Typer(name="memora")
 console = Console()
 
 @app.command()
-def add(
-    path: Path = typer.Argument(..., help="File or directory to add"),
-    recursive: bool = typer.Option(False, "-r", "--recursive", help="Recurse into directories"),
-):
-    t0 = time.time()
-    """Add files to memory."""
+def add(path: Path, recursive: bool = False):
+    """Add files to memory. Loads ML model only if necessary."""
     from memora.ingest import collect_files, read_file, chunk_text
     from memora.store import Store
-
-    store = Store()
+    
     files = collect_files(path, recursive)
     if not files:
         console.print("[yellow]No supported files found.[/]")
-        raise typer.Exit()
-
+        return
+    
+    store = Store()
     total = 0
     for f in files:
-        try:
-            with console.status(f"Processing {f.name}..."):
+        with console.status(f"Indexing {f.name}..."):
+            try:
                 text = read_file(f)
                 chunks = chunk_text(text)
                 n = store.add(chunks, str(f.resolve()))
                 total += n
-                console.print(f"  [green]✓[/] {f.name} → {n} chunks")
-        except Exception as e:
-            console.print(f"  [red]✗[/] {f.name} → {e}")
-
-    console.print(f"\n[bold green]Added {total} chunks from {len(files)} file(s)[/]")
-    print(f"Store init: {time.time()-t0:.2f}s")
-
-
-
-@app.command()
-def ask(question: str = typer.Argument(..., help="Question to ask")):
-    """Ask a question (one-shot)."""
-    from memora.rag import RAG
-
-    rag = RAG()
-    with console.status("Thinking..."):
-        answer = rag.ask(question)
-    console.print(f"\n[bold cyan]Answer:[/] {answer}")
-
+                if n > 0:
+                    console.print(f"  [green]✓[/] {f.name} ({n} chunks)")
+                else:
+                    console.print(f"  [dim]○[/] {f.name} (already indexed)")
+            except Exception as e:
+                console.print(f"  [red]✗[/] {f.name} ({e})")
+                
+    console.print(f"\n[bold green]Success![/] Added {total} new chunks.")
 
 @app.command()
-def chat():
-    """Interactive chat (TUI)."""
-    from memora.tui import MemoraApp
-
-    MemoraApp().run()
-
+def remove(source: str):
+    """Instant removal. Does NOT load ML model."""
+    from memora.store import MetadataStore
+    n = MetadataStore().remove(source)
+    if n > 0:
+        console.print(f"[green]✓[/] Removed {n} chunks. Index will update on next search.")
+    else:
+        console.print(f"[yellow]Source not found:[/] {source}")
 
 @app.command(name="list")
 def list_docs():
-    """List indexed documents."""
-    from memora.store import Store
-
-    sources = Store().list_sources()
+    """Instant listing of documents. Does NOT load ML model."""
+    from memora.store import MetadataStore
+    sources = MetadataStore().list_sources()
     if not sources:
-        console.print("[yellow]No documents indexed.[/]")
-        raise typer.Exit()
-
+        console.print("[dim]Memory is empty.[/]")
+        return
+        
     table = Table(title="Indexed Documents")
-    table.add_column("Source", style="cyan", no_wrap=False)
+    table.add_column("Source", style="cyan")
     table.add_column("Chunks", justify="right", style="green")
     for s in sources:
         table.add_row(s["source"], str(s["chunks"]))
     console.print(table)
 
+@app.command()
+def ask(question: str):
+    """Search & Answer. Loads ML model and LLM chain."""
+    from memora.rag import RAG
+    with console.status("Thinking..."):
+        try:
+            rag = RAG()
+            answer = rag.ask(question)
+            console.print(f"\n[bold cyan]Memora:[/] {answer}")
+        except Exception as e:
+            console.print(f"\n[red]Error:[/] {e}")
 
 @app.command()
 def stats():
-    """Show index statistics."""
-    from memora.store import Store
-
-    s = Store().stats()
-    console.print(f"[bold]Memora Stats[/]")
-    console.print(f"  Sources: [cyan]{s['total_sources']}[/]")
-    console.print(f"  Chunks:  [cyan]{s['total_chunks']}[/]")
-    console.print(f"  Vectors: [cyan]{s['index_size']}[/]")
-
-
-@app.command()
-def remove(source: str = typer.Argument(..., help="Source path to remove")):
-    """Remove a document from memory."""
-    from memora.store import Store
-
-    n = Store().remove(source)
-    if n:
-        console.print(f"[green]Removed {n} chunks from {source}[/]")
-    else:
-        console.print(f"[yellow]No document found: {source}[/]")
-
+    """Show storage statistics. Does NOT load ML model."""
+    from memora.store import MetadataStore
+    s = MetadataStore()
+    console.print("[bold]Memora Stats[/]")
+    console.print(f"  Sources: [cyan]{len(s.list_sources())}[/]")
+    console.print(f"  Chunks:  [cyan]{len(s.meta)}[/]")
+    if s.needs_rebuild:
+        console.print("  Status:  [yellow]Rebuild pending[/]")
 
 if __name__ == "__main__":
     app()

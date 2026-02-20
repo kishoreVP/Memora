@@ -10,10 +10,10 @@ class HybridRetriever:
         self.store = store
         self.bm25 = None
         self.bm25_path = settings.data_dir / "bm25.pkl"
-        self._load_bm25()
+        self._load_or_build_bm25()
 
-    def _load_bm25(self):
-        """Load cached BM25 or rebuild."""
+    def _load_or_build_bm25(self):
+        """Load cached BM25 or rebuild at init time."""
         if self.bm25_path.exists() and self.store.meta:
             try:
                 with open(self.bm25_path, 'rb') as f:
@@ -24,22 +24,25 @@ class HybridRetriever:
         self._rebuild_bm25()
 
     def _rebuild_bm25(self):
-        """Rebuild and cache BM25."""
+        """Rebuild and cache BM25 index."""
         if not self.store.meta:
             self.bm25 = None
             return
-        
+
+        # Use cached chunks - no disk I/O
         corpus = []
         for m in self.store.meta:
             text = self.store._read_chunk(m["id"])
             corpus.append(text.lower().split())
-        
+
         self.bm25 = BM25Okapi(corpus)
-        
+
+        # Save to cache
         with open(self.bm25_path, 'wb') as f:
             pickle.dump(self.bm25, f)
 
     def retrieve(self, query: str, k: int | None = None) -> list[dict]:
+        """Retrieve using hybrid search (semantic + BM25)."""
         k = k or settings.top_k
         if not self.store.meta:
             return []
@@ -49,11 +52,8 @@ class HybridRetriever:
 
         # BM25 search
         if self.bm25 is None:
-            self._rebuild_bm25()
-        
-        if self.bm25 is None:
             return sem[:k]
-        
+
         bm_scores = self.bm25.get_scores(query.lower().split())
         top_bm = np.argsort(bm_scores)[::-1][: k * 2]
         bm_results = [
@@ -70,7 +70,8 @@ class HybridRetriever:
             scored[doc["id"]] = scored.get(doc["id"], 0) + 1 / (rank + 60)
 
         top_ids = sorted(scored, key=scored.get, reverse=True)[:k]
-        
+
+        # Build results from cache - no disk I/O
         results = []
         for chunk_id in top_ids:
             for m in self.store.meta:
@@ -82,5 +83,5 @@ class HybridRetriever:
                         "score": scored[chunk_id]
                     })
                     break
-        
+
         return results

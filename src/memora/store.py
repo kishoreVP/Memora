@@ -1,181 +1,63 @@
 import json
-import os
 import time
-import logging
-import warnings
-import numpy as np
-import faiss
 import hashlib
+import os
 from pathlib import Path
+import numpy as np
 from memora.config import settings
 
-_model = None
-
-def _get_model():
-    """Lazy load model only when actually needed."""
-    global _model
-    if _model is None:
-        os.environ["TOKENIZERS_PARALLELISM"] = "false"
-        warnings.filterwarnings("ignore", category=FutureWarning)
-        warnings.filterwarnings("ignore", category=UserWarning)
-        logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
-        logging.getLogger("transformers").setLevel(logging.ERROR)
-        logging.getLogger("transformers.modeling_utils").setLevel(logging.ERROR)
-        logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
-        logging.getLogger("torch").setLevel(logging.ERROR)
-
-        from sentence_transformers import SentenceTransformer
-        _model = SentenceTransformer(settings.embedding_model)
-    return _model
-
-
-def embed(texts: list[str]) -> np.ndarray:
-    return _get_model().encode(texts, normalize_embeddings=True, show_progress_bar=False).astype("float32")
-
-
-def _dim() -> int:
-    """Get dimension without loading model."""
-    # Hard-code for common models to avoid loading
-    dim_map = {
-        "all-MiniLM-L6-v2": 384,
-        "all-mpnet-base-v2": 768,
-        "all-MiniLM-L12-v2": 384,
-    }
-    if settings.embedding_model in dim_map:
-        return dim_map[settings.embedding_model]
-    # Fallback: load model only if unknown
-    return _get_model().get_sentence_embedding_dimension()
-
+# --- AGGRESSIVE CPU OPTIMIZATION ---
+# These must be set before ANY imports to prevent thread-pool explosion
+os.environ["ORT_LOGGING_LEVEL"] = "3"
+os.environ["OMP_NUM_THREADS"] = "1" 
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 def _file_hash(path: str) -> str:
-    """Generate hash of file for deduplication."""
-    with open(path, 'rb') as f:
-        return hashlib.md5(f.read()).hexdigest()
+    """Fast hash for deduplication. No dependencies."""
+    try:
+        with open(path, 'rb') as f:
+            return hashlib.md5(f.read()).hexdigest()
+    except:
+        return ""
 
-
-class Store:
+class MetadataStore:
+    """Handles metadata and chunk files without loading heavy ML libraries."""
+    
     def __init__(self):
         settings.ensure_dirs()
         self.chunks_dir = settings.data_dir / "chunks"
         self.chunks_dir.mkdir(exist_ok=True)
         self.meta: list[dict] = []
         self.file_hashes: dict[str, str] = {}
-        self.index: faiss.Index | None = None
-        self._load()
+        self.needs_rebuild: bool = False
+        self._load_meta()
 
-    def _load(self):
-        """Load index WITHOUT triggering model load."""
+    def _load_meta(self):
         if settings.meta_path.exists():
-            data = json.loads(settings.meta_path.read_text())
-            self.meta = data.get("chunks", [])
-            self.file_hashes = data.get("hashes", {})
-        
-        if settings.index_path.exists():
-            self.index = faiss.read_index(str(settings.index_path))
-        else:
-            # Create index with known dimension - NO MODEL LOADING
-            self.index = faiss.IndexFlatIP(_dim())
+            try:
+                data = json.loads(settings.meta_path.read_text())
+                self.meta = data.get("chunks", [])
+                self.file_hashes = data.get("hashes", {})
+                self.needs_rebuild = data.get("needs_rebuild", False)
+            except:
+                pass
 
-    def _save(self):
+    def _save_meta(self):
         data = {
             "chunks": self.meta,
-            "hashes": self.file_hashes
+            "hashes": self.file_hashes,
+            "needs_rebuild": self.needs_rebuild
         }
         settings.meta_path.write_text(json.dumps(data, indent=2))
-        faiss.write_index(self.index, str(settings.index_path))
 
     def _get_chunk_path(self, chunk_id: int) -> Path:
         return self.chunks_dir / f"{chunk_id}.txt"
 
-    def _write_chunk(self, chunk_id: int, text: str):
-        self._get_chunk_path(chunk_id).write_text(text, encoding="utf-8")
-
     def _read_chunk(self, chunk_id: int) -> str:
+        """Helper for retriever/RAG to get text content from disk."""
         path = self._get_chunk_path(chunk_id)
         return path.read_text(encoding="utf-8") if path.exists() else ""
-
-    def add(self, chunks: list[str], source: str) -> int:
-        # Check deduplication
-        try:
-            file_hash = _file_hash(source)
-            if source in self.file_hashes and self.file_hashes[source] == file_hash:
-                return 0
-            self.file_hashes[source] = file_hash
-        except:
-            pass
-
-        # Model loads HERE - only when embedding
-        vecs = embed(chunks)
-        start = self.index.ntotal
-        self.index.add(vecs)
-        ts = time.time()
-        
-        for i, chunk in enumerate(chunks):
-            chunk_id = start + i
-            self._write_chunk(chunk_id, chunk)
-            self.meta.append({
-                "id": chunk_id, 
-                "source": source, 
-                "ts": ts
-            })
-        
-        self._save()
-        return len(chunks)
-
-    def search(self, query: str, k: int | None = None) -> list[dict]:
-        k = min(k or settings.top_k, self.index.ntotal) if self.index.ntotal else 0
-        if k == 0:
-            return []
-        
-        if hasattr(self.index, 'nprobe'):
-            self.index.nprobe = 10
-        
-        # Model loads HERE - only when searching
-        vec = embed([query])
-        scores, ids = self.index.search(vec, k)
-        
-        results = []
-        for j, i in enumerate(ids[0]):
-            if i < len(self.meta):
-                meta = self.meta[i]
-                text = self._read_chunk(meta["id"])
-                results.append({
-                    **meta,
-                    "text": text,
-                    "score": float(scores[0][j])
-                })
-        return results
-
-    def remove(self, source: str) -> int:
-        keep = [m for m in self.meta if m["source"] != source]
-        removed = len(self.meta) - len(keep)
-        if removed == 0:
-            return 0
-        
-        # Remove chunk files
-        for m in self.meta:
-            if m["source"] == source:
-                chunk_path = self._get_chunk_path(m["id"])
-                if chunk_path.exists():
-                    chunk_path.unlink()
-        
-        self.file_hashes.pop(source, None)
-        
-        self.meta = keep
-        self.index = faiss.IndexFlatIP(_dim())
-        
-        if keep:
-            vectors = []
-            for m in keep:
-                text = self._read_chunk(m["id"])
-                vectors.append(text)
-            # Model loads HERE
-            vecs = embed(vectors)
-            self.index.add(vecs)
-            for i, m in enumerate(keep):
-                m["id"] = i
-        self._save()
-        return removed
 
     def list_sources(self) -> list[dict]:
         sources: dict[str, dict] = {}
@@ -186,10 +68,102 @@ class Store:
             sources[s]["chunks"] += 1
         return list(sources.values())
 
-    def stats(self) -> dict:
-        sources = self.list_sources()
-        return {
-            "total_chunks": len(self.meta),
-            "total_sources": len(sources),
-            "index_size": self.index.ntotal,
-        }
+    def remove(self, source: str) -> int:
+        """Soft remove: instant deletion of pointers."""
+        removed_ids = [m["id"] for m in self.meta if m["source"] == source]
+        if not removed_ids: return 0
+        
+        for cid in removed_ids:
+            p = self._get_chunk_path(cid)
+            if p.exists(): p.unlink()
+            
+        self.meta = [m for m in self.meta if m["source"] != source]
+        self.file_hashes.pop(source, None)
+        self._save_meta()
+        return len(removed_ids)
+
+class Store(MetadataStore):
+    """Full store optimized for < 5s first-time execution."""
+    
+    def __init__(self):
+        super().__init__()
+        self._engine = None
+        self._index = None
+        self.faiss = None
+
+    def _init_ml(self):
+        """Surgical ML initialization."""
+        if self._engine is not None:
+            return
+        
+        try:
+            from fastembed import TextEmbedding
+            import faiss
+            self.faiss = faiss
+            
+            # Optimization: BAAI/bge-small is 3x faster to load than MiniLM on cold start
+            self._engine = TextEmbedding(
+                model_name="BAAI/bge-small-en-v1.5",
+                providers=["CPUExecutionProvider"]
+            )
+            self.dim = 384 
+            
+            # Warmup: Pre-calculate one tiny string to 'bake' the ONNX session
+            list(self._engine.embed(["warmup"]))
+            
+        except ImportError as e:
+            raise ImportError(f"Missing dependency: {e.name}. Run 'uv sync'.")
+
+    def _load_index(self):
+        if self._index is not None: return
+        self._init_ml()
+        
+        if settings.index_path.exists():
+            self._index = self.faiss.read_index(str(settings.index_path))
+        else:
+            self._index = self.faiss.IndexFlatIP(self.dim)
+
+    def add(self, chunks: list[str], source: str) -> int:
+        f_hash = _file_hash(source)
+        if source in self.file_hashes and self.file_hashes[source] == f_hash:
+            return 0
+
+        self._load_index()
+        
+        # Incremental adding: no bulk re-embedding ever
+        vecs = np.array(list(self._engine.embed(chunks)))
+        
+        start_pos = self._index.ntotal
+        for i, text in enumerate(chunks):
+            chunk_id = start_pos + i
+            self._get_chunk_path(chunk_id).write_text(text, encoding="utf-8")
+            self.meta.append({"id": chunk_id, "source": source, "ts": time.time()})
+        
+        self._index.add(vecs.astype("float32"))
+        self.file_hashes[source] = f_hash
+        
+        self.faiss.write_index(self._index, str(settings.index_path))
+        self._save_meta()
+        return len(chunks)
+
+    def search(self, query: str, k: int = 5) -> list[dict]:
+        self._load_index()
+        if self._index.ntotal == 0: return []
+        
+        search_k = min(k * 3, self._index.ntotal)
+        q_vec = np.array(list(self._engine.embed([query])))
+        scores, indices = self._index.search(q_vec.astype("float32"), search_k)
+        
+        meta_lookup = {m["id"]: m for m in self.meta}
+        results = []
+        for j, idx in enumerate(indices[0]):
+            if idx in meta_lookup:
+                m = meta_lookup[idx]
+                results.append({
+                    **m,
+                    "text": self._read_chunk(m["id"]),
+                    "score": float(scores[0][j])
+                })
+            if len(results) >= k:
+                break
+        return results

@@ -1,11 +1,10 @@
 import logging
+import base64
 from pathlib import Path
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from memora.config import settings,SUPPORTED,TEXT_EXTENSIONS
-import base64
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage 
-
+from langchain_core.messages import HumanMessage
+from memora.config import settings, SUPPORTED, TEXT_EXTENSIONS
 
 
 def caption_image(path: Path) -> str:
@@ -20,12 +19,10 @@ def caption_image(path: Path) -> str:
 
     message = HumanMessage(
         content=[
-            {"type": "text", "text": "You are a image captioner just Caption this image."},
+            {"type": "text", "text": "You are an image captioner. Caption this image concisely."},
             {
                 "type": "image_url",
-                "image_url": {
-                    "url": f"data:image/jpeg;base64,{image_base64}"
-                },
+                "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"},
             },
         ]
     )
@@ -36,7 +33,7 @@ def caption_image(path: Path) -> str:
 
 def read_file(path: Path) -> str:
     ext = path.suffix.lower()
-    if ext in TEXT_EXTENSIONS:
+    if ext in TEXT_EXTENSIONS or path.name in TEXT_EXTENSIONS:
         return path.read_text(encoding="utf-8", errors="ignore")
     if ext == ".pdf":
         logging.getLogger("pypdf").setLevel(logging.ERROR)
@@ -46,22 +43,28 @@ def read_file(path: Path) -> str:
         from docx import Document
         return "\n".join(p.text for p in Document(str(path)).paragraphs)
     if ext in {".jpg", ".jpeg", ".png"}:
-        caption = caption_image(path)
-        print(f"Caption for {path.name}: {caption}")
-        return caption
+        return caption_image(path)
+    
     raise ValueError(f"Unsupported file type: {ext}")
 
 
 def chunk_text(text: str) -> list[str]:
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=settings.chunk_size, chunk_overlap=settings.chunk_overlap
+        chunk_size=settings.chunk_size,
+        chunk_overlap=settings.chunk_overlap
     )
     return splitter.split_text(text)
 
 
 def collect_files(path: Path, recursive: bool = False) -> list[Path]:
     if path.is_file():
-        return [path] if path.suffix.lower() in SUPPORTED else []
+        if path.suffix.lower() in SUPPORTED or path.name in SUPPORTED:
+            return [path]
+        return []
+    
     pattern = "**/*" if recursive else "*"
-    return [f for f in path.glob(pattern) if f.is_file() and f.suffix.lower() in SUPPORTED]
-
+    files = []
+    for f in path.glob(pattern):
+        if f.is_file() and (f.suffix.lower() in SUPPORTED or f.name in SUPPORTED):
+            files.append(f)
+    return files

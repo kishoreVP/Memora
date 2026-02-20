@@ -5,6 +5,7 @@ description = "Terminal-based personal memory assistant"
 requires-python = ">=3.10"
 dependencies = [
     "textual",
+    "fastembed",
     "rich",
     "typer",
     "langchain",

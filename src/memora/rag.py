@@ -4,6 +4,9 @@ from langchain_core.output_parsers import StrOutputParser
 from memora.store import Store
 from memora.retriever import HybridRetriever
 from memora.config import settings
+from dotenv import load_dotenv
+
+load_dotenv()
 
 SYSTEM = """You are Memora, a helpful memory assistant. Answer based on the provided context.
 If the context doesn't contain relevant info, say so. Be concise and accurate.
